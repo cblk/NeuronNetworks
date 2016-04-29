@@ -20,14 +20,14 @@ object TestForNN {
   def main(args: Array[String]) {
 
     /*构建Spark对象*/
-    val conf = new SparkConf().setAppName("NNtest").setMaster("yarn-client")
+    val conf = new SparkConf().setAppName("NNtest").setMaster("spark://spark4:7077").setJars(List("C:\\Users\\cblk\\IdeaProjects\\NeuronNetworks\\out\\artifacts\\NeuronNetworks_jar\\NeuronNetworks.jar"))
     val sc = new SparkContext(conf)
-    val nameNode = "hdfs://10.141.211.123:9000/"
+    //val nameNode = "hdfs://10.141.211.123:9000/"
 
     /*随机生成测试数据*/
     // 生成原始随机样本数据
     Logger.getRootLogger.setLevel(Level.WARN)
-    val sampleNum = 1000
+    val sampleNum = 100
     val xDimens = 5
     val sampleMatrix = RandomSampleData.RandM(sampleNum, xDimens, -10, 10, "sphere")
     // 归一化
@@ -44,21 +44,22 @@ object TestForNN {
     }
     //由本地的样本数据集合生成分布式内存数据集Rdd
     val sampleRdd = sc.parallelize(sampleArray, 10)
-    sc.setCheckpointDir(nameNode + "checkpoint")
-    sampleRdd.checkpoint()
+    //sc.setCheckpointDir(nameNode + "checkpoint")
+    //sampleRdd.checkpoint
+
     val trainData = sampleRdd.map(f => (new BDM(1, 1, f(::, 0).data), f(::, 1 to -1)))
 
     /*设置训练参数，建立模型*/
     // params:迭代步长，训练次数，交叉验证比例
-    val params = Array(100.0, 20.0, 0.2)
+    val params = Array(20.0, 20.0, 0.2)
     trainData.cache
-    val numSamples = trainData.count()
+    val numSamples = trainData.count
     println(s"numSamples = $numSamples.")
-    val NNModel = new NeuralNet().
+    val nnModel = new NeuralNet().
       setSize(Array(5, 7, 1)).
       setLayer(3).
-      setActivation_function("tanh_opt").
-      setLearningRate(2.0).
+      setActivation_function("sigm").
+      setLearningRate(1.0).
       setScaling_learningRate(1.0).
       setWeightPenaltyL2(0.0).
       setNonSparsityPenalty(0.0).
@@ -69,33 +70,25 @@ object TestForNN {
       NNTrain(trainData, params)
 
     //4 模型测试
-    val NNForecast = NNModel.predict(trainData)
-    val NNError = NNModel.Loss(NNForecast)
+    val NNForecast = nnModel.predict(trainData)
+    val NNError = nnModel.Loss(NNForecast)
     println(s"NNError = $NNError.")
     val predictResult = NNForecast.map(f => (f.label.data(0), f.predict_label.data(0))).take(200)
 
-    println("预测结果——实际值：预测值：误差")
     val yMax = normMax(0, 0)
     val yMin = normMin(0, 0)
-    for (i <- predictResult.indices)
-      println((predictResult(i)._1 * (yMax - yMin) + yMin) + "\t" + (predictResult(i)._2 * (yMax - yMin) + yMin) + "\t" + (predictResult(i)._2 - predictResult(i)._1))
+    for (i <- predictResult.indices) {
+      val o1 = predictResult(i)._1
+      val o2 = predictResult(i)._2
+      val p1 = o1 * (yMax - yMin) + yMin
+      val p2 = o2 * (yMax - yMin) + yMin
+      println(s"实际值 $o1 ($p1); 预测值 $o2 ($p2)")
+    }
 
-    println("权重W{1}")
-    val w0 = NNModel.weights(0)
-    for (i <- 0 until w0.rows) {
-      for (j <- 0 until w0.cols) {
-        print(w0(i, j) + "\t")
-      }
-      println()
-    }
-    println("权重W{2}")
-    val w1 = NNModel.weights(1)
-    for (i <- 0 until w1.rows) {
-      for (j <- 0 until w1.cols) {
-        print(w1(i, j) + "\t")
-      }
-      println()
-    }
+
+
+    NNRunLog.logWeight(nnModel.weights, "更新后权重")
+
 
     NNRunLog.logTrainData(trainData, "原始样本数据")
 
