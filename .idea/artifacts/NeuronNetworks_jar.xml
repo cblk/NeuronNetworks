@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" build-on-make="true" name="NeuronNetworks:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/NeuronNetworks_jar</output-path>
+    <root id="archive" name="NeuronNetworks.jar">
+      <element id="module-output" name="NeuronNetworks" />
+    </root>
+  </artifact>
+</component>
