@@ -7,7 +7,7 @@ package neuron.spark
 import breeze.linalg.{sum, CSCMatrix => BSM, DenseMatrix => BDM, DenseVector => BDV, Matrix => BM, SparseVector => BSV, Vector => BV, axpy => brzAxpy, svd => brzSvd}
 import breeze.numerics.{sqrt, exp => Bexp, tanh => Btanh}
 import breeze.stats.distributions.Rand
-import neuron.util.NNRunLog
+import neuron.util.{NNCheck, NNRunLog}
 import org.apache.spark.Logging
 import org.apache.spark.rdd.RDD
 
@@ -19,7 +19,7 @@ import scala.util.Random
   * nna：神经网络每层节点的输出值,a(0),a(1),a(2)
   * error：输出层与目标值的误差矩阵
   */
-case class NNLabel(label: BDM[Double], A: ArrayBuffer[BDM[Double]], error: BDM[Double]) extends Serializable
+case class NNLabel(label: Double, A: ArrayBuffer[BDV[Double]], error: Double) extends Serializable
 
 /**
   * 配置参数
@@ -146,19 +146,10 @@ class NeuralNet(private var size: Array[Int],
   /**
     * 运行神经网络算法.
     */
-  def NNTrain(sampleData: RDD[(BDM[Double], BDM[Double])], params: Array[Double]): NeuralNetModel = {
+  def NNTrain(sampleData: RDD[(Double, BDV[Double])], params: Array[Double]): NeuralNetModel = {
     val sc = sampleData.sparkContext
     var startTime = System.currentTimeMillis()
     var endTime = System.currentTimeMillis()
-    // 参数配置 广播配置
-    var nnConfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
-      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, testing,
-      output_function)
-    // 初始化权重
-    var nn_W = NeuralNet.InitialWeight(size)
-    NNRunLog.logWeight(nn_W, "初始权重")
-
-    var nn_vW = NeuralNet.InitialWeightV(size)
 
     // 样本数据划分：训练数据、交叉检验数据
     val validation = params(2)
@@ -169,108 +160,125 @@ class NeuralNet(private var size: Array[Int],
 
     // sampleSize:训练样本的总量
     val sampleSize = dataForTrain.count
-
     // m是一次迭代中的样本总量，即迭代步长
-    val m = params(0).toInt
     val epochs = params(1).toInt
 
     //numBatches是迭代次数,即将总量为sampleSize的样本分为numBatches份，每份有m个样本
-    val numBatches = (sampleSize / m).toInt
-    println("样本总量：" + sampleSize + ";训练次数：" + epochs + ";迭代次数：" + numBatches)
+    println("样本总量：" + sampleSize + ";训练次数：" + epochs)
 
-    val L = Array.fill(epochs * numBatches)(0.0)
-    var n = 0
-    val lossTrain = Array.fill(epochs)(0.0)
-    val lossValid = Array.fill(epochs)(0.0)
-
-    // epochs是训练的次数
-    for (i <- 0 until epochs) {
-      startTime = System.currentTimeMillis()
-      // 根据迭代步长划分样本
-      val splitWeight2 = Array.fill(numBatches)(1.0 / numBatches)
-      val dataForBatchTrain = dataForTrain.randomSplit(splitWeight2)
-
-      val broadcastConfig = sc.broadcast(nnConfig)
-      for (l <- 0 until numBatches) {
-        // 将权重广播到每个节点，使其可以在Rdd操作的闭包函数内访问
-        val broadcastW = sc.broadcast(nn_W)
-        val broadcastVW = sc.broadcast(nn_vW)
-        val batch0 = dataForBatchTrain(l)
-
-        // 在迭代训练样本中加入噪声
-        val batch = if (broadcastConfig.value.inputZeroMaskedFraction != 0) {
-          NeuralNet.AddNoise(batch0, broadcastConfig.value.inputZeroMaskedFraction)
-        } else batch0
-        // 前向传播
-        val ffResult = NeuralNet.NNff(batch, broadcastConfig, broadcastW)
-        // 后向传播
-        val bpResult = NeuralNet.NNbp(ffResult, broadcastConfig, broadcastW)
-
-        // weights and biases
-        // 更新权重参数：w=w-α*[dw + λw]
-        val gradientResult = NeuralNet.NNapplygrads(bpResult, broadcastConfig, broadcastW, broadcastVW)
-        nn_W = gradientResult(0)
-        nn_vW = gradientResult(1)
-
-        //        val tmpw2 = gradientResult(0)(0)
-        //        for (i <- 0 to tmpw2.rows - 1) {
-        //          for (j <- 0 to tmpw2.cols - 1) {
-        //            print(tmpw2(i, j) + "\t")
-        //          }
-        //          println()
-        //        }
-        //        val tmpw3 = gradientResult(0)(1)
-        //        for (i <- 0 to tmpw3.rows - 1) {
-        //          for (j <- 0 to tmpw3.cols - 1) {
-        //            print(tmpw3(i, j) + "\t")
-        //          }
-        //          println()
-        //        }
-
-        // error and loss
-        // 输出误差计算
-        val loss1 = ffResult.map(f => f._1.error)
-        val (loss2, counte) = loss1.treeAggregate((0.0, 0L))(
-          seqOp = (c, v) => {
-            // c: (e, count), v: (m)
-            val e1 = c._1
-            val e2 = sum(v :* v)
-            val esum = e1 + e2
-            (esum, c._2 + 1)
-          },
-          combOp = (c1, c2) => {
-            // c: (e, count)
-            val e1 = c1._1
-            val e2 = c2._1
-            val esum = e1 + e2
-            (esum, c1._2 + c2._2)
-          })
-        val Loss = loss2 / counte.toDouble
-        L(n) = Loss * 0.5
-        n = n + 1
-      }
-      // 计算本次迭代的训练误差及交叉检验误差
-      // Full-batch train mse
-      val evalconfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
-        weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1.0,
-        output_function)
-      lossTrain(i) = NeuralNet.NNeval(dataForTrain, sc.broadcast(evalconfig), sc.broadcast(nn_W))
-      if (validation > 0) lossValid(i) = NeuralNet.NNeval(dataForValid, sc.broadcast(evalconfig), sc.broadcast(nn_W))
-
-      // 更新学习因子
-      // nn.learningRate = nn.learningRate * nn.scaling_learningRate;
-      nnConfig = NNConfig(size, layer, activation_function, nnConfig.learningRate * nnConfig.scaling_learningRate, momentum, scaling_learningRate,
-        weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, testing,
-        output_function)
-      endTime = System.currentTimeMillis()
-
-      // 打印输出结果
-      printf("epoch: numepochs = %d , Took = %d seconds; Full-batch train mse = %f, val mse = %f.\n", i, scala.math.ceil((endTime - startTime).toDouble / 1000).toLong, lossTrain(i), lossValid(i))
-    }
-    val configok = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
+    // 训练参数配置
+    var nnConfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
+      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, testing,
+      output_function)
+    //交叉验证参数配置
+    val evalConfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
       weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1.0,
       output_function)
-    new NeuralNetModel(configok, nn_W)
+    //参数配置广播
+    var broadcastConfig = sc.broadcast(nnConfig)
+    val broadcastEvalConfig = sc.broadcast(evalConfig)
+    //权重配置
+    var nn_W = NeuralNet.InitialWeight(size)
+    var nn_vW = NeuralNet.InitialWeightV(size)
+    //权重广播
+    var broadcastW = sc.broadcast(nn_W)
+    var broadcastVW = sc.broadcast(nn_vW)
+
+    var minLoss = 10000.0
+    var lossTrain = 0.0
+    var lossValid = 0.0
+
+    var minW = nn_W
+    // 进行epochs次训练
+    var isLocalMin = false
+    var isConvergence = false
+    var lastLoss = 1000.0
+    var smallTime = 0
+    var i = 0
+    while (i < epochs && !isConvergence) {
+      //达到局部最小值后更改权重
+      if (isLocalMin) {
+        nn_W = NeuralNet.InitialWeight(size)
+        nn_vW = NeuralNet.InitialWeightV(size)
+        broadcastW = sc.broadcast(nn_W)
+        broadcastVW = sc.broadcast(nn_vW)
+        nnConfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
+          weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, testing,
+          output_function)
+        //参数配置广播
+        broadcastConfig = sc.broadcast(nnConfig)
+        isLocalMin = false
+        smallTime = 0
+      }
+      //第一次迭代前计算误差
+      if (i == 0) {
+        startTime = System.currentTimeMillis()
+        lossTrain = NeuralNet.NNeval(dataForTrain, broadcastConfig, broadcastW)
+        if (validation > 0) lossValid = NeuralNet.NNeval(dataForValid, broadcastConfig, broadcastW)
+        // 训练前误差
+        endTime = System.currentTimeMillis()
+        printf("迭代前误差  Took = %d ms; Full-batch train mse = %f, val mse = %f.\n",
+          endTime - startTime, lossTrain, lossValid)
+        lastLoss = lossValid
+      }
+
+      // 在迭代训练样本中加入噪声
+      val batch = if (broadcastConfig.value.inputZeroMaskedFraction != 0) {
+        NeuralNet.AddNoise(dataForTrain, broadcastConfig.value.inputZeroMaskedFraction)
+      } else dataForTrain
+      // 前向传播
+      val ffResult = NeuralNet.NNff(batch, broadcastConfig, broadcastW)
+      // 后向传播
+      val bpResult = NeuralNet.NNbp(ffResult, broadcastConfig, broadcastW)
+
+      // 更新权重参数,并将其广播到各个节点
+      val gradientResult = NeuralNet.NNapplygrads(bpResult, broadcastConfig, broadcastW, broadcastVW)
+      nn_W = gradientResult(0)
+      nn_vW = gradientResult(1)
+      broadcastW = sc.broadcast(nn_W)
+      broadcastVW = sc.broadcast(nn_vW)
+
+      // 计算本次迭代的训练误差及交叉检验误差
+      lossTrain = NeuralNet.NNeval(dataForTrain, broadcastEvalConfig, broadcastW)
+      if (validation > 0) lossValid = NeuralNet.NNeval(dataForValid, broadcastEvalConfig, broadcastW)
+
+      // 更新学习因子,并将其广播到各个节点用于下次迭代
+      nnConfig = NNConfig(size, layer, activation_function, nnConfig.learningRate * nnConfig.scaling_learningRate,
+        momentum, scaling_learningRate, weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction,
+        dropoutFraction, testing,
+        output_function)
+      broadcastConfig = sc.broadcast(nnConfig)
+
+      endTime = System.currentTimeMillis()
+      // 打印输出结果
+      printf("迭代次数= %d , Took = %d ms; Full-batch train mse = %f, val mse = %f.\n",
+        i+1, endTime - startTime, lossTrain, lossValid)
+      //记录最佳结果
+      if (lossValid < minLoss) {
+        minW = nn_W
+        minLoss = lossValid
+        if (lossValid < 0.008) {
+          isConvergence = true
+          println("Convergence!! lossValid is %f", lossValid)
+        }
+      }
+      if (lastLoss - lossValid >= -0.00000001 && lastLoss - lossValid <= 0.00000001) {
+        smallTime += 1
+        if (smallTime > 10) {
+          isLocalMin = true
+          println("local min!!")
+        }
+      } else {
+        smallTime = 0
+      }
+
+      lastLoss = lossValid
+      i += 1
+    }
+    val configOkay = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
+      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1.0,
+      output_function)
+    new NeuralNetModel(configOkay, minW)
   }
 
 }
@@ -289,14 +297,13 @@ object NeuralNet extends Serializable {
     * 参见《Extracting and Composing Robust Features with DeNoising AutoEncoders》
     * @param fraction: 调整的比例
     */
-  def AddNoise(rdd: RDD[(BDM[Double], BDM[Double])], fraction: Double): RDD[(BDM[Double], BDM[Double])] = {
+  def AddNoise(rdd: RDD[(Double, BDV[Double])], fraction: Double): RDD[(Double, BDV[Double])] = {
     val addNoise = rdd.map { f =>
       val features = f._2
-      val a = BDM.rand[Double](features.rows, features.cols)
+      val a = BDV.rand[Double](features.length)
       val a1 = a :>= fraction
-      val d1 = a1.data.map { f => if (f) 1.0 else 0.0 }
-      val a2 = new BDM(features.rows, features.cols, d1)
-      val features2 = features :* a2
+      val d1 = a1.map { f => if (f) 1.0 else 0.0 }
+      val features2 = features :* d1
       (f._1, features2)
     }
     addNoise
@@ -310,10 +317,9 @@ object NeuralNet extends Serializable {
     val weightLists = ArrayBuffer[BDM[Double]]()
     for (i <- 1 until size.length) {
       val w = BDM.rand(size(i), size(i - 1) + 1, new Rand[Double] {
-        def draw = Random.nextDouble()/50
+        def draw = Random.nextDouble()
       })
-      w :-= 0.01
-
+      w :-= 0.5
       weightLists += w
     }
     weightLists.toArray
@@ -354,21 +360,20 @@ object NeuralNet extends Serializable {
     * 随机让网络某些隐含层节点的权重不工作
     * 若随机值>=Fraction，矩阵值不变，否则改为0
     */
-  def DropoutWeight(matrix: BDM[Double], Fraction: Double): Array[BDM[Double]] = {
-    val aa = BDM.rand[Double](matrix.rows, matrix.cols)
+  def DropoutWeight(vector: BDV[Double], Fraction: Double): Array[BDV[Double]] = {
+    val aa = BDV.rand[Double](vector.length)
     val aa1 = aa :> Fraction
-    val d1 = aa1.data.map { f => if (f) 1.0 else 0.0 }
-    val aa2 = new BDM(matrix.rows: Int, matrix.cols: Int, d1: Array[Double])
-    val matrix2 = matrix :* aa2
-    Array(aa2, matrix2)
+    val d1 = aa1.map { f => if (f) 1.0 else 0.0 }
+    val vector2 = vector :* d1
+    Array(d1, vector2)
   }
 
   /**
     * sigm激活函数
     * X = 1./(1+exp(-P));
     */
-  def sigm(matrix: BDM[Double]): BDM[Double] = {
-    val s1 = 1.0 / (Bexp(matrix * (-1.0)) + 1.0)
+  def sigm(vector: BDV[Double]): BDV[Double] = {
+    val s1 = 1.0 / (Bexp(vector * (-1.0)) + 1.0)
     s1
   }
 
@@ -376,8 +381,8 @@ object NeuralNet extends Serializable {
     * tanh激活函数
     * f=1.7159*tanh(2/3.*A);
     */
-  def tanh_opt(matrix: BDM[Double]): BDM[Double] = {
-    val s1 = Btanh(matrix * (2.0 / 3.0)) * 1.7159
+  def tanh_opt(vector: BDV[Double]): BDV[Double] = {
+    val s1 = Btanh(vector * (2.0 / 3.0)) * 1.7159
     s1
   }
 
@@ -386,18 +391,17 @@ object NeuralNet extends Serializable {
     * 计算神经网络中的每个节点的输出值;
     */
   def NNff(
-            batch_xy2: RDD[(BDM[Double], BDM[Double])],
+            batch_xy2: RDD[(Double, BDV[Double])],
             bc_config: org.apache.spark.broadcast.Broadcast[NNConfig],
-            bc_nn_W: org.apache.spark.broadcast.Broadcast[Array[BDM[Double]]]): RDD[(NNLabel, Array[BDM[Double]])] = {
+            bc_nn_W: org.apache.spark.broadcast.Broadcast[Array[BDM[Double]]]): RDD[(NNLabel, Array[BDV[Double]])] = {
     // 第1层:a(1)=[1 x]
     // 增加偏置项b
     val ff1 = batch_xy2.map { f =>
       val label = f._1
       val x = f._2
-      val A = ArrayBuffer[BDM[Double]]()
-      val Bm1 = BDM.ones[Double](x.rows, 1)
-      val xb = BDM.horzcat(Bm1, x)
-      val error = BDM.zeros[Double](label.rows, label.cols)
+      val A = ArrayBuffer[BDV[Double]]()
+      val xb = BDV.vertcat(BDV.ones[Double](1), x)
+      val error = 0.0
       A += xb
       NNLabel(label, A, error)
     }
@@ -406,16 +410,19 @@ object NeuralNet extends Serializable {
     // 第2至l-1层计算，a(i)=f(a(i-1)*w(i-1)')
     val ffj = ff1.map { f =>
       val A = f.A
-      val dropOutMask = ArrayBuffer[BDM[Double]]()
-      dropOutMask += new BDM[Double](1, 1, Array(0.0))
+      val dropOutMask = ArrayBuffer[BDV[Double]]()
+      dropOutMask += new BDV[Double](Array(0.0))
       for (j <- 1 until bc_config.value.layer - 1) {
         // 计算每层输出
-        // Calculate the unit's outputs (including the bias term)
         // nn.a{i} = sigm(nn.a{i - 1} * nn.W{i - 1}')
         // nn.a{i} = tanh_opt(nn.a{i - 1} * nn.W{i - 1}');
+
+        //Ai为前一层的输出，是一个向量
         val Ai = A(j - 1)
+        //Wi为当前层与前一层之间的权重矩阵
         val Wi = bc_nn_W.value(j - 1)
-        val Zj = Ai * Wi.t
+        //Zj是当前层的
+        val Zj = Wi * Ai
         val Aj = bc_config.value.activation_function match {
           case "sigm" =>
             NeuralNet.sigm(Zj)
@@ -426,24 +433,20 @@ object NeuralNet extends Serializable {
         // Dropout是指在模型训练时随机让网络某些隐含层节点的权重不工作，不工作的那些节点可以暂时认为不是网络结构的一部分
         // 但是它的权重得保留下来（只是暂时不更新而已），因为下次样本输入时它可能又得工作了
         // 参照 http://www.cnblogs.com/tornadomeet/p/3258122.html
-        val dropoutai = if (bc_config.value.dropoutFraction > 0) {
+        val dropoutAj = if (bc_config.value.dropoutFraction > 0) {
           if (bc_config.value.testing == 1) {
             val Aj2 = Aj * (1.0 - bc_config.value.dropoutFraction)
-            Array(new BDM[Double](1, 1, Array(0.0)), Aj2)
+            Array(new BDV[Double](Array(0.0)), Aj2)
           } else {
             NeuralNet.DropoutWeight(Aj, bc_config.value.dropoutFraction)
           }
         } else {
-          val Aj2 = Aj
-          Array(new BDM[Double](1, 1, Array(0.0)), Aj2)
+          Array(new BDV[Double](Array(0.0)), Aj)
         }
-        val Aj2 = dropoutai(1)
-        dropOutMask += dropoutai(0)
-        // Add the bias term
+        val Aj2 = dropoutAj(1)
+        dropOutMask += dropoutAj(0)
         // 增加偏置项b
-        // nn.a{i} = [ones(m,1) nn.a{i}];
-        val Bj = BDM.ones[Double](Aj2.rows, 1)
-        val Aj3 = BDM.horzcat(Bj, Aj2)
+        val Aj3 = BDV.vertcat(BDV.ones[Double](1), Aj2)
         A += Aj3
       }
       (NNLabel(f.label, A, f.error), dropOutMask.toArray)
@@ -456,7 +459,7 @@ object NeuralNet extends Serializable {
       // nn.a{n} = nn.a{n - 1} * nn.W{n - 1}';
       val Al_ = A(bc_config.value.layer - 2)
       val Wl_ = bc_nn_W.value(bc_config.value.layer - 2)
-      val Zl = Al_ * Wl_.t
+      val Zl:BDV[Double] =  Wl_ * Al_
       val Al = bc_config.value.output_function match {
         case "sigm" =>
           NeuralNet.sigm(Zl)
@@ -474,26 +477,31 @@ object NeuralNet extends Serializable {
     val ffResult = ffl.map { f =>
       val batch_y = f._1.label
       val Al = f._1.A(bc_config.value.layer - 1)
-      val error = batch_y - Al
+      val error = batch_y - Al(0)
       (NNLabel(batch_y, f._1.A, error), f._2)
     }
+    val nnlabel = ffResult.map(f => f._1)
+    NNRunLog.logAn(nnlabel, "各层输出")
     ffResult
   }
+
+
+
 
   /**
     * sparsity计算，网络稀疏度
     * 计算每个隐藏节点的平均活跃度
     */
-  def activeP(ffResult: RDD[(NNLabel, Array[BDM[Double]])],
+  def activeP(ffResult: RDD[(NNLabel, Array[BDV[Double]])],
               bc_config: org.apache.spark.broadcast.Broadcast[NNConfig],
-              nn_p_old: Array[BDM[Double]]): Array[BDM[Double]] = {
-    val nn_p = ArrayBuffer[BDM[Double]]()
-    nn_p += BDM.zeros[Double](1, 1)
+              nn_p_old: Array[BDV[Double]]): Array[BDV[Double]] = {
+    val nn_p = ArrayBuffer[BDV[Double]]()
+    nn_p += BDV.zeros[Double](1)
     // calculate running exponential activations for use with sparsity
     // sparsity计算，计算sparsity，nonSparsityPenalty 是对没达到sparsity target的参数的惩罚系数
     for (i <- 1 until bc_config.value.layer - 1) {
       val pi = ffResult.map(f => f._1.A(i))
-      val zeroPi = BDM.zeros[Double](1, bc_config.value.size(i))
+      val zeroPi = BDV.zeros[Double](bc_config.value.size(i))
       val (piSum, batchSize) = pi.treeAggregate((zeroPi, 0L))(
         seqOp = (c, v) => {
           // c: (nnaSum, count), v: (nna)
@@ -514,20 +522,14 @@ object NeuralNet extends Serializable {
     nn_p.toArray
   }
 
-  def checkGradient(
-                     label: NNLabel,
-                     bc_nn_W: Array[BDM[Double]],
-                     bc_config: NNConfig
-                   ): Unit = {
 
-  }
 
   /**
     * NNbp是后向传播
     * 计算权重的平均偏导数
     */
   def NNbp(
-            ffResult: RDD[(NNLabel, Array[BDM[Double]])],
+            ffResult: RDD[(NNLabel, Array[BDV[Double]])],
             bc_config: org.apache.spark.broadcast.Broadcast[NNConfig],
             bc_nn_W: org.apache.spark.broadcast.Broadcast[Array[BDM[Double]]]): Array[BDM[Double]] = {
     // 第n层偏导数：d(n)=-(y-a(n))*f'(z)，sigmoid导函数表达式:f'(z)=f(z)*[1-f(z)]
@@ -535,13 +537,13 @@ object NeuralNet extends Serializable {
     val Dn = ffResult.map { f =>
       val A = f._1.A
       val error = f._1.error
-      val D = ArrayBuffer[BDM[Double]]()
+      val D = ArrayBuffer[BDV[Double]]()
       val dn = bc_config.value.output_function match {
         case "sigm" =>
           val fz = A(bc_config.value.layer - 1)
-          (error * (-1.0)) :* (fz :* (1.0 - fz))
+          (error * (-1.0)) * (fz :* (1.0 - fz))
         case "linear" =>
-          error * (-1.0)
+          new BDV(Array(error * (-1.0)))
       }
       D += dn
       (f._1, f._2, D)
@@ -569,40 +571,43 @@ object NeuralNet extends Serializable {
         val nndi1 = if (i + 1 == bc_config.value.layer - 1) {
           //in this case in d{n} there is not the bias term to be removed
           val di1 = D(bc_config.value.layer - 2 - i)
-          val di2 = (di1 * Wi) :* nnd_act
-          di2
+          val di2 =  Wi.t * di1
+          val di3 = di2 :* nnd_act
+          di3
         } else {
           // in this case in d{i} the bias term has to be removed
-          val di1 = D(bc_config.value.layer - 2 - i)(::, 1 to -1)
-          val di2 = (di1 * Wi) :* nnd_act
-          di2
+          val di1 = D(bc_config.value.layer - 2 - i)(1 to -1)
+          val di2 = Wi.t * di1
+          val di3 = di2 :* nnd_act
+          di3
         }
         // dropoutFraction
         val nndi2 = if (bc_config.value.dropoutFraction > 0) {
           val dropouti1 = dropout(i)
-          val Bm1 = new BDM(nndi1.rows: Int, 1: Int, Array.fill(nndi1.rows * 1)(1.0))
-          val dropouti2 = BDM.horzcat(Bm1, dropouti1)
+          val dropouti2 = BDV.vertcat(BDV.ones[Double](1), dropouti1)
           nndi1 :* dropouti2
         } else nndi1
         D += nndi2
       }
-      D += BDM.zeros(1, 1)
+      D += BDV.zeros(1)
       // 计算最终需要的偏导数值
       // dW{i} = d{i + 1} * a{i}
       val dW = ArrayBuffer[BDM[Double]]()
       for (i <- 0 to bc_config.value.layer - 2) {
         val dwi = if (i + 1 == bc_config.value.layer - 1) {
-          D(bc_config.value.layer - 2 - i).t * A(i)
+          D(bc_config.value.layer - 2 - i) * A(i).t
         } else {
-          D(bc_config.value.layer - 2 - i)(::, 1 to -1).t * A(i)
+          D(bc_config.value.layer - 2 - i)(1 to -1) * A(i).t
         }
         dW += dwi
       }
       (f._1, D, dW.toArray)
     }
 
-    val dW = Di.map(f => f._3)
+    val bpResult = Di.map(f => (f._1, f._3))
+    //NNCheck.checkGradient(bpResult, bc_config.value, bc_nn_W.value)
 
+    val dW = Di.map(f => f._3)
     // Sample a subset (fraction miniBatchFraction) of the total data
     // compute and sum up the subgradients on this subset (this is one map-reduce)
     val initGradList = ArrayBuffer[BDM[Double]]()
@@ -670,10 +675,9 @@ object NeuralNet extends Serializable {
         val dwi2 = dwi + (l2 * bc_config.value.weightPenaltyL2)
         dwi2
       } else {
-        val dwi = avgGradList(i)
-        dwi
+        avgGradList(i)
       }
-      val nndwi2 = nndwi :* bc_config.value.learningRate
+      val nndwi2 = nndwi * bc_config.value.learningRate
       val nndwi3 = if (bc_config.value.momentum > 0) {
         val vwi = bc_nn_vW.value(i)
         val dw3 = nndwi2 + (vwi * bc_config.value.momentum)
@@ -697,11 +701,11 @@ object NeuralNet extends Serializable {
   }
 
   /**
-    * nneval是进行前向传播并计算输出误差
+    * 进行前向传播计算代价函数值
     * 计算神经网络中的每个节点的输出值，并计算平均误差;
     */
   def NNeval(
-              batch_xy: RDD[(BDM[Double], BDM[Double])],
+              batch_xy: RDD[(Double, BDV[Double])],
               bc_config: org.apache.spark.broadcast.Broadcast[NNConfig],
               bc_nn_W: org.apache.spark.broadcast.Broadcast[Array[BDM[Double]]]): Double = {
     // NNff是进行前向传播
@@ -714,18 +718,20 @@ object NeuralNet extends Serializable {
       seqOp = (c, v) => {
         // c: (e, count), v: (m)
         val e1 = c._1
-        val e2 = sum(v :* v)
+        val e2 = v * v
         val esum = e1 + e2
         (esum, c._2 + 1)
       },
       combOp = (c1, c2) => {
         // c: (e, count)
-        val e1 = c1._1
-        val e2 = c2._1
-        val esum = e1 + e2
-        (esum, c1._2 + c2._2)
+        (c1._1 +  c2._1, c1._2 + c2._2)
       })
-    val Loss = loss2 / count.toDouble
-    Loss * 0.5
+    if (count != 0) {
+      val Loss = loss2 / count.toDouble
+      Loss * 0.5
+    } else {
+      0.0
+    }
+
   }
 }

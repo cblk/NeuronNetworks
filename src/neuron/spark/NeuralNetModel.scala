@@ -12,7 +12,7 @@ import org.apache.spark.rdd.RDD
   * predict_label：预测矩阵
   * error：误差
   */
-case class PredictResult(label: BDM[Double], features: BDM[Double], predict_label: BDM[Double], error: BDM[Double]) extends Serializable
+case class PredictResult(label: Double, features: BDV[Double], predict_label: Double, error: Double) extends Serializable
 
 /**
   * NN(neural network)
@@ -26,7 +26,7 @@ class NeuralNetModel(
     * 返回预测结果
     *  返回格式：(label, feature,  predict_label, error)
     */
-  def predict(dataMatrix: RDD[(BDM[Double], BDM[Double])]): RDD[PredictResult] = {
+  def predict(dataMatrix: RDD[(Double, BDV[Double])]): RDD[PredictResult] = {
     val sc = dataMatrix.sparkContext
     val bc_nn_W = sc.broadcast(weights)
     val bc_config = sc.broadcast(config)
@@ -36,8 +36,8 @@ class NeuralNetModel(
       val label = f._1.label
       val error = f._1.error
       val An = f._1.A(bc_config.value.layer - 1)
-      val A1 = f._1.A(0)(::, 1 to -1)
-      PredictResult(label, A1, An, error)
+      val A1 = f._1.A(0)(1 to -1)
+      PredictResult(label, A1, An(0), error)
     }
     predict
   }
@@ -51,11 +51,11 @@ class NeuralNetModel(
     // error and loss
     // 输出误差计算
     val loss1 = predict1
-    val (loss2, counte) = loss1.treeAggregate((0.0, 0L))(
+    val (loss2, count) = loss1.treeAggregate((0.0, 0L))(
       seqOp = (c, v) => {
         // c: (e, count), v: (m)
         val e1 = c._1
-        val e2 = sum(v :* v)
+        val e2 = v * v
         val esum = e1 + e2
         (esum, c._2 + 1)
       },
@@ -66,7 +66,7 @@ class NeuralNetModel(
         val esum = e1 + e2
         (esum, c1._2 + c2._2)
       })
-    val Loss = loss2 / counte.toDouble
+    val Loss = loss2 / count.toDouble
     Loss * 0.5
   }
 
