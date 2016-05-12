@@ -4,6 +4,7 @@ import breeze.linalg.{*, max, min, sum, DenseMatrix => BDM, DenseVector => BDV}
 
 /**
   * Created by cblk on 2016/5/2.
+  * 归一化均值为0
   */
 object Norm {
   def apply(sampleMatrix: BDM[Double]): BDM[Double] = {

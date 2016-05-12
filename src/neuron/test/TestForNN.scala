@@ -44,7 +44,7 @@ object TestForNN {
     }
 
     //由本地的样本数据集合生成分布式内存数据集Rdd
-    val sampleRdd = sc.parallelize(sampleArray, 1)
+    val sampleRdd = sc.parallelize(DataProcess.getSample(sc, "1387880"), 1)
     //sc.setCheckpointDir(nameNode + "checkpoint")
     //sampleRdd.checkpoint
 
@@ -58,10 +58,10 @@ object TestForNN {
     val numSamples = trainData.count
     println(s"numSamples = $numSamples.")
     val nnModel = new NeuralNet().
-      setSize(Array(2, 2, 1)).
+      setSize(Array(6, 5, 1)).
       setLayer(3).
       setActivation_function("sigm").
-      setLearningRate(2).
+      setLearningRate(0.2).
       setMomentum(0.0).
       setScaling_learningRate(1.0).
       setWeightPenaltyL2(0.02).
