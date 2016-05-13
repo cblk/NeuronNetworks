@@ -3,6 +3,8 @@
     <output-path>$PROJECT_DIR$/out/artifacts/NeuronNetworks_jar</output-path>
     <root id="archive" name="NeuronNetworks.jar">
       <element id="module-output" name="NeuronNetworks" />
+      <element id="extracted-dir" path="$USER_HOME$/spark/commons-csv-1.2.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$USER_HOME$/spark/spark-csv_2.10-1.4.0.jar" path-in-jar="/" />
     </root>
   </artifact>
 </component>

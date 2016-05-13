@@ -8,25 +8,26 @@ import neuron.spark.NNLabel
 import org.apache.spark.rdd.RDD
 
 import scala.collection.mutable.ArrayBuffer
+import scala.io.Source
 
 /**
   * Created by cblk on 2016/4/28.
   */
 object NNRunLog {
-/*  private val inputLogPath = "/usr/local/spark/workspace/input.log"
-  private val outputLogPath = "/usr/local/spark/workspace/out.log"
-  private val weightPath = "/usr/local/spark/workspace/weight.log"*/
-
-  private val inputLogPath = "C:\\Users\\cblk\\Desktop\\test\\input.log"
-  private val outputLogPath = "C:\\Users\\cblk\\Desktop\\test\\out.log"
-  private val weightPath = "C:\\Users\\cblk\\Desktop\\test\\weight.log"
-  private val gradientCheckPath = "C:\\Users\\cblk\\Desktop\\test\\gradient.log"
+  /*  private val inputLogPath = "/usr/local/spark/workspace/input.log"
+    private val outputLogPath = "/usr/local/spark/workspace/out.log"
+    private val weightPath = "/usr/local/spark/workspace/weight.log"*/
+  private val root = "C:\\Users\\cblk\\Desktop\\test\\"
+  private val inputLogPath = root + "input.log"
+  private val outputLogPath = root + "out.log"
+  private val weightPath = root + "weight.log"
+  private val gradientCheckPath = root + "gradient.log"
 
   private val dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
   val isLog = false
 
   def logTrainData(trainData: RDD[(Double, BDV[Double])], tag: String): Unit = {
-    if (true) {
+    if (isLog) {
       val writer = getWriter(inputLogPath, true)
 
       writer.write("\r\n" + tag + "\t" + dateFormat.format(System.currentTimeMillis()) + "\r\n")
@@ -51,6 +52,7 @@ object NNRunLog {
       for (i <- nnLabels.indices) {
         val A = nnLabels(i).A
         val l = nnLabels(i).label
+        val e = nnLabels(i).error
         writer.write(s"第 $i 个样本的各层输出如下：\r\n")
         for (j <- A.indices) {
           writer.write(s"第 $j 层:")
@@ -60,14 +62,13 @@ object NNRunLog {
           writer.write("\r\n")
         }
         writer.write("label:" + l + "\r\n")
-
+        writer.write("error:" + e + "\r\n")
       }
 
       writer.close()
     }
-
-
   }
+
 
   def logWeight(weights: Array[BDM[Double]], tag: String): Unit = {
     if (isLog) {
@@ -115,6 +116,33 @@ object NNRunLog {
     if (!f.exists()) f.createNewFile()
     val o = new FileOutputStream(f, isAppend)
     new PrintWriter(o, true)
+  }
+
+  def saveBDV(id: String, data: Array[BDV[Double]]): Unit = {
+    val path = root + id
+    val writer = getWriter(path, false)
+    data.foreach { v =>
+      val r = v.data
+      r.foreach(x => writer.write(x + ","))
+      writer.write("\r\n")
+    }
+    writer.close()
+  }
+
+  def getBDV(id: String): ArrayBuffer[BDV[Double]] = {
+    val path = root + id
+    val f = new File(path)
+    val data = new ArrayBuffer[BDV[Double]]()
+    if (f.exists()) {
+     Source.fromFile(f).getLines().foreach { l =>
+       val d = l.split(",")
+       val d1 = d.map(s => s.toDouble)
+       if (d1.length == 7 && d1(0) < 1.0) {
+         data += new BDV(d1)
+       }
+     }
+    }
+    data
   }
 
 }

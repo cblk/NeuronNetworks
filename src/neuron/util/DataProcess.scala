@@ -1,11 +1,10 @@
 package neuron.test
 
-import breeze.linalg.{DenseVector => BDV}
-import org.apache.spark.mllib.linalg.DenseVector
+import breeze.linalg.{DenseMatrix => BDM, DenseVector => BDV}
+import neuron.util.NNRunLog
+import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Dataset, SQLContext}
-import org.apache.spark.{SparkConf, SparkContext}
 
-import scala.collection.immutable.HashMap
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -18,14 +17,15 @@ case class CleanRecord(id: String, date: Int, total: Double, fee1: Double, fee2:
 
 object DataProcess {
   val nameNode = "hdfs://10.141.211.123:9000/"
-  private val recordDSList: Array[Dataset[Array[CleanRecord]]] = new Array(12)
+
   private val fileList = Array("201201.csv", "201202.csv", "201203.csv", "201204.csv", "201205.csv", "201206.csv",
     "201207.csv", "201208.csv", "201209.csv", "201210.csv", "201211.csv", "201212.csv")
   private val days = Array(31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
   private val accDays = Array(0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335)
 
-  private def getRecords(sc: SparkContext): Unit = {
+  private def getRecords(sc: SparkContext): Array[Dataset[Array[CleanRecord]]] = {
     val sqlContext = new SQLContext(sc)
+    val recordDSList: Array[Dataset[Array[CleanRecord]]] = new Array(12)
     import sqlContext.implicits._
 
     for (i <- 1 to 12) {
@@ -60,6 +60,7 @@ object DataProcess {
       }
       recordDSList(i - 1) = data
     }
+    recordDSList
   }
 
   private def checkNull(records: Array[Record]): Boolean = {
@@ -76,25 +77,43 @@ object DataProcess {
 
 
   def getSample(sc: SparkContext, id: String): Array[BDV[Double]] = {
-    getRecords(sc)
-    val res = recordDSList.flatMap { rl =>
-      rl.filter(r => r(0).id == id).collect()
-    }
-    val sample = new ArrayBuffer[BDV[Double]]()
-    for (i <- res.indices) {
-      for (j <- res(i).indices) {
-        val rs = res(i)
-        if (j == 0) {
-        } else if (j < 3) {
-          sample += new BDV(Array(rs(j).fee1, rs(j + 1).fee1, rs(j + 2).fee1, rs(j + 3).fee1, rs(j + 4).fee1, rs(j + 5).fee1, rs(j + 6).fee1))
-        } else if (j >= res(i).length - 3) {
-          sample += new BDV(Array(rs(j).fee1, rs(j - 1).fee1, rs(j - 2).fee1, rs(j - 3).fee1, rs(j - 4).fee1, rs(j - 5).fee1, rs(j - 6).fee1))
-        } else {
-          sample += new BDV(Array(rs(j).fee1, rs(j - 3).fee1, rs(j - 2).fee1, rs(j - 1).fee1, rs(j + 1).fee1, rs(j + 2).fee1, rs(j + 3).fee1))
+    val sample = NNRunLog.getBDV(id)
+    if (sample.nonEmpty) {
+      sample.toArray
+    } else {
+      val recordDSList = getRecords(sc)
+      val res = recordDSList.flatMap { rl =>
+        rl.filter(r => r(0).id == id).collect()
+      }
+
+      for (i <- res.indices) {
+        for (j <- res(i).indices) {
+          val rs = res(i)
+          if (j == 0) {
+          } else if (j < 3) {
+            sample += new BDV(Array(rs(j).fee1, rs(j + 1).fee1, rs(j + 2).fee1, rs(j + 3).fee1, rs(j + 4).fee1, rs(j + 5).fee1, rs(j + 6).fee1))
+          } else if (j >= res(i).length - 3) {
+            sample += new BDV(Array(rs(j).fee1, rs(j - 1).fee1, rs(j - 2).fee1, rs(j - 3).fee1, rs(j - 4).fee1, rs(j - 5).fee1, rs(j - 6).fee1))
+          } else {
+            sample += new BDV(Array(rs(j).fee1, rs(j - 3).fee1, rs(j - 2).fee1, rs(j - 1).fee1, rs(j + 1).fee1, rs(j + 2).fee1, rs(j + 3).fee1))
+          }
         }
       }
+      NNRunLog.saveBDV(id, sample.toArray)
+      sample.toArray
     }
-    sample.toArray
   }
 
+  def arrayToMatrix(data: Array[BDV[Double]]): BDM[Double] = {
+   new BDM(data(0).length, data.length, data.flatMap(v => v.data)).t
+  }
+
+  def matrixToArray(data: BDM[Double]): Array[BDV[Double]] = {
+    val d = new ArrayBuffer[BDV[Double]]()
+    for (i <- 0 until data.rows) {
+      val s = data(i, ::).t
+      d += s
+    }
+    d.toArray
+  }
 }

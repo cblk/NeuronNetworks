@@ -35,7 +35,7 @@ case class NNConfig(size: Array[Int],
                     sparsityTarget: Double,
                     inputZeroMaskedFraction: Double,
                     dropoutFraction: Double,
-                    testing: Double,
+                    testing: Int,
                     output_function: String) extends Serializable
 
 /**
@@ -53,11 +53,11 @@ class NeuralNet(private var size: Array[Int],
                 private var sparsityTarget: Double,
                 private var inputZeroMaskedFraction: Double,
                 private var dropoutFraction: Double,
-                private var testing: Double,
+                private var testing: Int,
                 private var output_function: String,
                 private var initW: Array[BDM[Double]]) extends Serializable with Logging {
 
-  def this() = this(NeuralNet.Architecture, 3, NeuralNet.Activation_Function, 2.0, 0.5, 1.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, NeuralNet.Output, Array(BDM.zeros[Double](1, 1)))
+  def this() = this(NeuralNet.Architecture, 3, NeuralNet.Activation_Function, 2.0, 0.5, 1.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0, NeuralNet.Output, Array(BDM.zeros[Double](1, 1)))
 
   /** 设置神经网络结构. Default: [10, 5, 1]. */
   def setSize(size: Array[Int]): this.type = {
@@ -126,7 +126,7 @@ class NeuralNet(private var size: Array[Int],
   }
 
   /** 设置testing. Default: 0. */
-  def setTesting(testing: Double): this.type = {
+  def setTesting(testing: Int): this.type = {
     this.testing = testing
     this
   }
@@ -152,7 +152,7 @@ class NeuralNet(private var size: Array[Int],
     var endTime = System.currentTimeMillis()
 
     // 样本数据划分：训练数据、交叉检验数据
-    val validation = params(2)
+    val validation = params(1)
     val splitWeights = Array(1.0 - validation, validation)
     val sampleDataSplitArray = sampleData.randomSplit(splitWeights)
     val dataForTrain = sampleDataSplitArray(0)
@@ -160,10 +160,9 @@ class NeuralNet(private var size: Array[Int],
 
     // sampleSize:训练样本的总量
     val sampleSize = dataForTrain.count
-    // m是一次迭代中的样本总量，即迭代步长
-    val epochs = params(1).toInt
+    //训练次数
+    val epochs = params(0).toInt
 
-    //numBatches是迭代次数,即将总量为sampleSize的样本分为numBatches份，每份有m个样本
     println("样本总量：" + sampleSize + ";训练次数：" + epochs)
 
     // 训练参数配置
@@ -172,7 +171,7 @@ class NeuralNet(private var size: Array[Int],
       output_function)
     //交叉验证参数配置
     val evalConfig = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
-      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1.0,
+      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1,
       output_function)
     //参数配置广播
     var broadcastConfig = sc.broadcast(nnConfig)
@@ -257,7 +256,7 @@ class NeuralNet(private var size: Array[Int],
       if (lossValid < minLoss) {
         minW = nn_W
         minLoss = lossValid
-        if (lossValid < 0.008) {
+        if (lossValid < 0.0012) {
           isConvergence = true
           println("Convergence!! lossValid is %f", lossValid)
         }
@@ -276,7 +275,7 @@ class NeuralNet(private var size: Array[Int],
       i += 1
     }
     val configOkay = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
-      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1.0,
+      weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1,
       output_function)
     new NeuralNetModel(configOkay, minW)
   }
@@ -317,9 +316,9 @@ object NeuralNet extends Serializable {
     val weightLists = ArrayBuffer[BDM[Double]]()
     for (i <- 1 until size.length) {
       val w = BDM.rand(size(i), size(i - 1) + 1, new Rand[Double] {
-        def draw = Random.nextDouble()
+        def draw = Random.nextDouble()/10
       })
-      w :-= 0.5
+      w :-= 0.05
       weightLists += w
     }
     weightLists.toArray
@@ -481,7 +480,7 @@ object NeuralNet extends Serializable {
       (NNLabel(batch_y, f._1.A, error), f._2)
     }
     val nnlabel = ffResult.map(f => f._1)
-    NNRunLog.logAn(nnlabel, "各层输出")
+
     ffResult
   }
 
@@ -711,27 +710,10 @@ object NeuralNet extends Serializable {
     // NNff是进行前向传播
     // nn = nnff(nn, batch_x, batch_y);
     val ffResult = NeuralNet.NNff(batch_xy, bc_config, bc_nn_W)
+    NNRunLog.logAn(ffResult.map(f => f._1), "各层输出")
     // error and loss
     // 输出误差计算
     val loss1 = ffResult.map(f => f._1.error)
-    val (loss2, count) = loss1.treeAggregate((0.0, 0L))(
-      seqOp = (c, v) => {
-        // c: (e, count), v: (m)
-        val e1 = c._1
-        val e2 = v * v
-        val esum = e1 + e2
-        (esum, c._2 + 1)
-      },
-      combOp = (c1, c2) => {
-        // c: (e, count)
-        (c1._1 +  c2._1, c1._2 + c2._2)
-      })
-    if (count != 0) {
-      val Loss = loss2 / count.toDouble
-      Loss * 0.5
-    } else {
-      0.0
-    }
-
+   loss1.map(d => d*d).mean() * 0.5
   }
 }

@@ -13,11 +13,11 @@ object Test {
   }
 
   def matrixTest(): Unit = {
-    val m = BDM.ones[Double](6, 7)
-    val n = m - m
+    val data = Array(Array(1, 2, 3), Array(4, 5, 6))
+    val m = new BDM[Int](3, 2, Array(1, 2, 3, 4, 5, 6)).t
+    val v = BDV(0, 0)
+    val n = m(0, ::).t
     println(n)
-    val normMax = sum(n(::, *)) / n.rows.toDouble
-    println(normMax)
 
   }
 

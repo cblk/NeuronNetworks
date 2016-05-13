@@ -26,25 +26,14 @@ object TestForNN {
     val sc = new SparkContext(conf)
     //val nameNode = "hdfs://10.141.211.123:9000/"
 
-    /*随机生成测试数据*/
-    // 生成原始随机样本数据
-    Logger.getRootLogger.setLevel(Level.ERROR)
-    val sampleNum = 10
-    val xDimens = 2
-    val sampleMatrix = RandomSampleData.RandM(sampleNum, xDimens, -10, 10, "xor")
-    // 归一化
+    Logger.getRootLogger.setLevel(Level.WARN)
 
-    val norm2 = Norm(sampleMatrix)
 
-    // 将矩阵形式的原始样本拆分成数组形式保存
-    val sampleArray = ArrayBuffer[BDV[Double]]()
-    for (i <- 0 until sampleNum) {
-      val mi = sampleMatrix(i, ::).inner
-      sampleArray += mi
-    }
+    val sampleMatrix = DataProcess.arrayToMatrix(DataProcess.getSample(sc, "1387880"))
+    val norm = DataProcess.matrixToArray(Norm(sampleMatrix))
 
     //由本地的样本数据集合生成分布式内存数据集Rdd
-    val sampleRdd = sc.parallelize(DataProcess.getSample(sc, "1387880"), 1)
+    val sampleRdd = sc.parallelize(DataProcess.getSample(sc, "1387880"))
     //sc.setCheckpointDir(nameNode + "checkpoint")
     //sampleRdd.checkpoint
 
@@ -53,21 +42,22 @@ object TestForNN {
 
     /*设置训练参数，建立模型*/
     // params:迭代步长，训练次数，交叉验证比例
-    val params = Array(100, 2000, 0.2)
+    val params = Array(5000, 0.2)
     trainData.cache
     val numSamples = trainData.count
     println(s"numSamples = $numSamples.")
     val nnModel = new NeuralNet().
-      setSize(Array(6, 5, 1)).
+      setSize(Array(6, 5, 4, 1)).
       setLayer(3).
       setActivation_function("sigm").
-      setLearningRate(0.2).
+      setLearningRate(0.1).
       setMomentum(0.0).
       setScaling_learningRate(1.0).
-      setWeightPenaltyL2(0.02).
+      setWeightPenaltyL2(0.0).
       setNonSparsityPenalty(0.0).
-      setSparsityTarget(0.05).
-      setInputZeroMaskedFraction(0.1).
+      setSparsityTarget(0.0).
+      setInputZeroMaskedFraction(0.0).
+      setTesting(0).
       setDropoutFraction(0.0).
       setOutput_function("sigm").
       NNTrain(trainData, params)
