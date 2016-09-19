@@ -21,19 +21,30 @@ object TestForNN {
 
     /*构建Spark对象*/
     val conf = new SparkConf().setAppName("NNtest")
-      .setMaster("spark://spark4:7077")
+        .setMaster("spark://spark4:7077")
       .setJars(List("C:\\Users\\cblk\\IdeaProjects\\NeuronNetworks\\out\\artifacts\\NeuronNetworks_jar\\NeuronNetworks.jar"))
     val sc = new SparkContext(conf)
     //val nameNode = "hdfs://10.141.211.123:9000/"
 
-    Logger.getRootLogger.setLevel(Level.WARN)
+    /*随机生成测试数据*/
+    // 生成原始随机样本数据
+    Logger.getRootLogger.setLevel(Level.ERROR)
+    val sampleNum = 29500
+    val xDimens = 6
+    val sampleMatrix = RandomSampleData.RandM(sampleNum, xDimens, -10, 10, "sphere")
+    // 归一化
 
+    val norm2 = Norm(sampleMatrix)
 
-    val sampleMatrix = DataProcess.arrayToMatrix(DataProcess.getSample(sc, "1387880"))
-    val norm = DataProcess.matrixToArray(Norm(sampleMatrix))
+    // 将矩阵形式的原始样本拆分成数组形式保存
+    val sampleArray = ArrayBuffer[BDV[Double]]()
+    for (i <- 0 until sampleNum) {
+      val mi = sampleMatrix(i, ::).inner
+      sampleArray += mi
+    }
 
     //由本地的样本数据集合生成分布式内存数据集Rdd
-    val sampleRdd = sc.parallelize(DataProcess.getSample(sc, "1387880"))
+    val sampleRdd = sc.parallelize(sampleArray)
     //sc.setCheckpointDir(nameNode + "checkpoint")
     //sampleRdd.checkpoint
 
@@ -42,15 +53,15 @@ object TestForNN {
 
     /*设置训练参数，建立模型*/
     // params:迭代步长，训练次数，交叉验证比例
-    val params = Array(5000, 0.2)
+    val params = Array(20, 0.2)
     trainData.cache
     val numSamples = trainData.count
     println(s"numSamples = $numSamples.")
     val nnModel = new NeuralNet().
-      setSize(Array(6, 5, 4, 1)).
+      setSize(Array(6, 5, 1)).
       setLayer(3).
       setActivation_function("sigm").
-      setLearningRate(0.1).
+      setLearningRate(0.05).
       setMomentum(0.0).
       setScaling_learningRate(1.0).
       setWeightPenaltyL2(0.0).
@@ -66,16 +77,10 @@ object TestForNN {
     val NNForecast = nnModel.predict(trainData)
     val NNError = nnModel.Loss(NNForecast)
     println(s"NNError = $NNError.")
-    val predictResult = NNForecast.map(f => (f.label, f.predict_label)).take(200)
+    val predictResult = NNForecast.map(f => (f.label, f.predict_label)).collect
 
+    NNRunLog.logRes(predictResult)
 
-    for (i <- predictResult.indices) {
-      val o1 = predictResult(i)._1
-      val o2 = predictResult(i)._2
-
-      println(s"实际值 $o1 ; 预测值 $o2 ")
-    }
-    NNRunLog.logWeight(nnModel.weights, "更新后权重")
 
 
   }

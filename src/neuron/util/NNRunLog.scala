@@ -14,14 +14,14 @@ import scala.io.Source
   * Created by cblk on 2016/4/28.
   */
 object NNRunLog {
-  /*  private val inputLogPath = "/usr/local/spark/workspace/input.log"
-    private val outputLogPath = "/usr/local/spark/workspace/out.log"
-    private val weightPath = "/usr/local/spark/workspace/weight.log"*/
+
   private val root = "C:\\Users\\cblk\\Desktop\\test\\"
   private val inputLogPath = root + "input.log"
   private val outputLogPath = root + "out.log"
   private val weightPath = root + "weight.log"
   private val gradientCheckPath = root + "gradient.log"
+  private val resPath = root + "res.log"
+  private val processPath = root + "process.log"
 
   private val dateFormat = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss")
   val isLog = false
@@ -110,6 +110,21 @@ object NNRunLog {
       writer.write("\r\n")
     }
   }
+
+  def logRes(res: Array[(Double, Double)]): Unit = {
+    val writer = getWriter(resPath, true)
+    res.foreach(r =>
+    writer.write(r._1 + "," + r._2 + "," + Math.abs(r._1-r._2)/r._1+ "\r\n") )
+    writer.close()
+  }
+
+  def logProcess(p: Array[(Int, Long, Double, Double)]): Unit = {
+    val writer = getWriter(processPath, true)
+    p.foreach(r =>
+      writer.write(r._1 + "," + r._2 + "," + r._3 + "," + r._4 + "\r\n") )
+    writer.close()
+  }
+
 
   def getWriter(path: String, isAppend: Boolean): PrintWriter = {
     val f = new File(path)

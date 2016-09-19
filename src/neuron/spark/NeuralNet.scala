@@ -194,6 +194,7 @@ class NeuralNet(private var size: Array[Int],
     var lastLoss = 1000.0
     var smallTime = 0
     var i = 0
+    val log = ArrayBuffer[(Int, Long, Double, Double)]()
     while (i < epochs && !isConvergence) {
       //达到局部最小值后更改权重
       if (isLocalMin) {
@@ -252,6 +253,10 @@ class NeuralNet(private var size: Array[Int],
       // 打印输出结果
       printf("迭代次数= %d , Took = %d ms; Full-batch train mse = %f, val mse = %f.\n",
         i+1, endTime - startTime, lossTrain, lossValid)
+
+      val r = (i+1, endTime - startTime, lossTrain, lossValid)
+      log += r
+
       //记录最佳结果
       if (lossValid < minLoss) {
         minW = nn_W
@@ -261,7 +266,7 @@ class NeuralNet(private var size: Array[Int],
           println("Convergence!! lossValid is %f", lossValid)
         }
       }
-      if (lastLoss - lossValid >= -0.00000001 && lastLoss - lossValid <= 0.00000001) {
+      if (lastLoss - lossValid >= -0.000000001 && lastLoss - lossValid <= 0.000000001) {
         smallTime += 1
         if (smallTime > 10) {
           isLocalMin = true
@@ -274,6 +279,7 @@ class NeuralNet(private var size: Array[Int],
       lastLoss = lossValid
       i += 1
     }
+    NNRunLog.logProcess(log.toArray)
     val configOkay = NNConfig(size, layer, activation_function, learningRate, momentum, scaling_learningRate,
       weightPenaltyL2, nonSparsityPenalty, sparsityTarget, inputZeroMaskedFraction, dropoutFraction, 1,
       output_function)
@@ -359,7 +365,7 @@ object NeuralNet extends Serializable {
     * 随机让网络某些隐含层节点的权重不工作
     * 若随机值>=Fraction，矩阵值不变，否则改为0
     */
-  def DropoutWeight(vector: BDV[Double], Fraction: Double): Array[BDV[Double]] = {
+  def   DropoutWeight(vector: BDV[Double], Fraction: Double): Array[BDV[Double]] = {
     val aa = BDV.rand[Double](vector.length)
     val aa1 = aa :> Fraction
     val d1 = aa1.map { f => if (f) 1.0 else 0.0 }

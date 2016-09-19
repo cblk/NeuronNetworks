@@ -104,6 +104,7 @@ object DataProcess {
     }
   }
 
+
   def arrayToMatrix(data: Array[BDV[Double]]): BDM[Double] = {
    new BDM(data(0).length, data.length, data.flatMap(v => v.data)).t
   }
